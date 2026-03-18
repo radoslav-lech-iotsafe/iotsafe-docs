@@ -1,0 +1,151 @@
+# Automatic calculation of the parameters
+
+```{python}
+#| echo: false
+import sys
+from pathlib import Path
+import numpy as np
+import os
+
+PATH = 'C:/Users/radzi/Desktop/Lavoro ascensori/WORKING_BRANCH/sbbgateway'
+sys.path.append(PATH)
+from sbb_algorithms.classes import *
+import sbb_algorithms.sBBfunctions_scipy as sbbfun 
+from sbb_algorithms.sBBfunctions import *
+```
+
+## Introduction
+
+This document describes the key parameters used to characterize an elevator (lift) and detect its operational events from acceleration signals. These parameters allow a `Record` to correctly identify **trips** (movement between floors) and **door operations** based on features extracted from vertical and horizontal acceleration data.
+
+---
+
+## Parameters
+
+Each lift may be characterized by a set of parameters.
+These parameters need to be passed to a `Record` in order to correctly identify trips and door operations.
+
+### `min_z_peak`
+
+**Unit:** $\frac{m}{s^2}$
+
+If the (smoothed) vertical acceleration exceeds this value, it means that the lift is accelerating or decelerating. After detecting these peaks, the start and the end of a trip are determined using a method described in `missing reference`.
+
+---
+
+### `min_door_len`
+
+**Unit:** $s$
+
+Minimum duration of a door operation.
+
+All vibrations that exceed the required amplitude threshold but last shorter than `min_door_len` are discarded.
+
+---
+
+### `doors_threshold`
+
+**Unit:** $\frac{m}{s^2}$
+
+Minimum amplitude of horizontal acceleration after preprocessing (taking the absolute value and smoothing).
+
+---
+
+### `mean_acc_z`
+
+**Unit:** $\frac{m}{s^2}$
+
+Mean value of the vertical acceleration. Ideally, it should be equal to the gravitational acceleration of the Earth.
+
+It is required for further signal processing, since it needs to be subtracted so that the signal oscillates around zero.
+
+---
+
+# Calculation Methods
+
+## `min_z_peak`
+
+The assumption underlying the calculation is that vibrations can be grouped into three separate classes:
+
+* Oscillations close to zero (background noise)
+* Other distinguishable vibrations (e.g. door openings)
+* Peaks during acceleration and deceleration
+* All of the above but with negative sign
+
+These classes are identified using the **k-means clustering algorithm**.
+
+The value of `min_z_peak` is determined by taking a safe fraction of the mean of the highest cluster. Currently, it is set to **75% of the cluster mean**.
+
+---
+
+## `min_door_len`
+
+This value is calculated as the **mean duration of all intervals** during which the horizontal acceleration exceeds the `doors_threshold`.
+
+---
+
+## `doors_threshold`
+
+Its calculation is based on horizontal vibrations.
+
+First, the signal is transformed by taking its **absolute value** and applying **moving average smoothing**. If the signal exceeds the threshold value for at least `min_door_len` seconds, the segment is considered a **door operation**.
+
+The threshold is calculated using the mean and standard deviation of the smoothed signal:
+
+```python
+doors_threshold = np.mean(self.y_smooth) + 0.25 * self.std_y_smooth
+```
+
+An example of the smoothed signal during a door opening can be seen in the figure below as highlighted in blue. The threshold is represented as the dashed line.
+
+
+
+```{python}
+#| echo: false
+
+MIN_HEIGHT = 0.35 # minimum height of peaks and troughs to be considered for the analysis, if None it will be set to the standard deviation of the signal
+GLOBAL_Y_MEAN = 0.0 # mean value of the signal, if None it will be set to the mean of the signal
+GLOBAL_Z_MEAN = 9.959
+WIN_LEN = 150 # window length for the moving average of the y signal, in number of samples
+MIN_LEN_DOORS = 4 # minimum length of a door operation in seconds, used to filter out false positives
+TIME_ANALYSIS = 60
+DOORS_THRESHOLD = 0.00813  # threshold for the detection of door operations, in m/s^2   
+
+DIR = PATH + "/campioni/"
+files = os.listdir(DIR)
+options = {
+        'rest_threshold': 0.015, # [m/s^2]
+        'doors_threshold': 0.08, # [m/s^2]
+        'v_threshold': 0.02, # [m/s]
+        'rest_minimum_length': 1, # [s]
+        'rest_safety_margin': 1, # [s]
+    }
+
+a_list = []
+t_list = []
+file_content = json.load(open(DIR + files[0]))
+packets = file_content["packets"]
+for i, packet in enumerate(packets):
+    if packet["sensor_type"] == "acc":
+        nominal_fps = packet["frequency_hz"]
+        acc = sbbfun.decode_hex_data(packet["data_hex"])
+        a =  convert(np.array(acc).transpose(),'LSB', 'm/s^2')
+        time_start = packet["timestamp_ms"]
+        next_time_start = file_content["packets"][i+1]["timestamp_ms"] if i+1 < len(file_content["packets"]) else time_start + len(acc[0]) * 1000/nominal_fps
+        t = np.linspace(time_start, next_time_start, num=len(acc[0]))/1000
+        # print(datetime.fromtimestamp(time_start/1000))
+
+        a_list.append(a)
+        t_list.append(t)
+a_full = np.concatenate(a_list)
+t_full = np.concatenate(t_list)
+record = Record(a_full, t_full, nominal_fps, min_height=MIN_HEIGHT)
+record.plot('y',smooth=('y',),xlim=(1.76467363e+09,1.76467367e+09), ylim=(-0.05,0.15))
+```
+
+## Audit log
+| Date | User | Descripption |
+|----------|----------|----------|
+| 16.03.2026 | Radosław Lech | First version |
+
+

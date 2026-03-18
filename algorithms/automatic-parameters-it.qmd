@@ -1,0 +1,148 @@
+# Calcolo automatico dei parametri
+
+```{python}
+#| echo: false
+import sys
+from pathlib import Path
+import numpy as np
+import os
+
+PATH = 'C:/Users/radzi/Desktop/Lavoro ascensori/WORKING_BRANCH/sbbgateway'
+sys.path.append(PATH)
+from sbb_algorithms.classes import *
+import sbb_algorithms.sBBfunctions_scipy as sbbfun 
+from sbb_algorithms.sBBfunctions import *
+```
+
+## Introduzione
+
+Questo documento descrive i principali parametri utilizzati per caratterizzare un ascensore e rilevare i suoi eventi operativi a partire dai segnali di accelerazione. Questi parametri permettono a un oggetto `Record` di identificare correttamente **le corse** (spostamenti tra piani) e **le operazioni delle porte** sulla base delle caratteristiche estratte dalle accelerazioni verticali e orizzontali.
+
+---
+
+## Parametri
+
+Ogni ascensore può essere caratterizzato da un insieme di parametri.
+Questi parametri devono essere forniti a un `Record` per identificare correttamente le corse e le operazioni delle porte.
+
+### `min_z_peak`
+
+**Unità:** $\frac{m}{s^2}$
+
+Se l'accelerazione verticale (smussata) supera questo valore, significa che l'ascensore sta accelerando o decelerando. Dopo aver individuato questi picchi, l'inizio e la fine di una corsa vengono determinati utilizzando un metodo descritto in `missing reference`.
+
+---
+
+### `min_door_len`
+
+**Unità:** $s$
+
+Durata minima di un'operazione della porta.
+
+Tutte le vibrazioni che superano la soglia di ampiezza richiesta ma durano meno di `min_door_len` vengono scartate.
+
+---
+
+### `doors_threshold`
+
+**Unità:** $\frac{m}{s^2}$
+
+Ampiezza minima dell'accelerazione orizzontale dopo il preprocessing (valore assoluto e smoothing).
+
+---
+
+### `mean_acc_z`
+
+**Unità:** $\frac{m}{s^2}$
+
+Valore medio dell'accelerazione verticale. Idealmente dovrebbe essere uguale all'accelerazione gravitazionale terrestre.
+
+È necessario per l'elaborazione successiva del segnale, poiché deve essere sottratto per far oscillare il segnale attorno allo zero.
+
+---
+
+# Metodi di Calcolo
+
+## `min_z_peak`
+
+L'ipotesi alla base del calcolo è che le vibrazioni possano essere suddivise in tre classi principali:
+
+* Oscillazioni vicine allo zero (rumore di fondo)
+* Altre vibrazioni distinguibili (ad esempio apertura delle porte)
+* Picchi durante accelerazione e decelerazione
+* Tutte le classi precedenti ma con segno negativo
+
+Queste classi vengono identificate utilizzando l'algoritmo di **clusterizzazione k-means**.
+
+Il valore `min_z_peak` viene determinato prendendo una frazione sicura della media del cluster con i valori più alti. Attualmente è impostato al **75% della media del cluster**.
+
+---
+
+## `min_door_len`
+
+Questo parametro è calcolato come la **durata media di tutti gli intervalli** in cui l'accelerazione orizzontale supera la soglia `doors_threshold`.
+
+---
+
+## `doors_threshold`
+
+Il suo calcolo si basa sulle vibrazioni orizzontali.
+
+Prima il segnale viene trasformato prendendo il **valore assoluto** e applicando uno **smoothing con media mobile**. Se il segnale supera la soglia per almeno `min_door_len` secondi, quel segmento del segnale viene considerato come **un'operazione della porta**.
+
+La soglia viene calcolata utilizzando la media e la deviazione standard del segnale smussato:
+
+```python
+doors_threshold = np.mean(self.y_smooth) + 0.25 * self.std_y_smooth
+```
+
+Un esempio del segnale smussato durante l'apertura di una porta è mostrato nella figura seguente (in blu). La soglia è rappresentata dalla linea tratteggiata.
+
+```{python}
+#| echo: false
+
+MIN_HEIGHT = 0.35 # minimum height of peaks and troughs to be considered for the analysis, if None it will be set to the standard deviation of the signal
+GLOBAL_Y_MEAN = 0.0 # mean value of the signal, if None it will be set to the mean of the signal
+GLOBAL_Z_MEAN = 9.959
+WIN_LEN = 150 # window length for the moving average of the y signal, in number of samples
+MIN_LEN_DOORS = 4 # minimum length of a door operation in seconds, used to filter out false positives
+TIME_ANALYSIS = 60
+DOORS_THRESHOLD = 0.00813  # threshold for the detection of door operations, in m/s^2   
+
+DIR = PATH + "/campioni/"
+files = os.listdir(DIR)
+options = {
+        'rest_threshold': 0.015, # [m/s^2]
+        'doors_threshold': 0.08, # [m/s^2]
+        'v_threshold': 0.02, # [m/s]
+        'rest_minimum_length': 1, # [s]
+        'rest_safety_margin': 1, # [s]
+    }
+
+a_list = []
+t_list = []
+file_content = json.load(open(DIR + files[0]))
+packets = file_content["packets"]
+for i, packet in enumerate(packets):
+    if packet["sensor_type"] == "acc":
+        nominal_fps = packet["frequency_hz"]
+        acc = sbbfun.decode_hex_data(packet["data_hex"])
+        a =  convert(np.array(acc).transpose(),'LSB', 'm/s^2')
+        time_start = packet["timestamp_ms"]
+        next_time_start = file_content["packets"][i+1]["timestamp_ms"] if i+1 < len(file_content["packets"]) else time_start + len(acc[0]) * 1000/nominal_fps
+        t = np.linspace(time_start, next_time_start, num=len(acc[0]))/1000
+        # print(datetime.fromtimestamp(time_start/1000))
+
+        a_list.append(a)
+        t_list.append(t)
+a_full = np.concatenate(a_list)
+t_full = np.concatenate(t_list)
+record = Record(a_full, t_full, nominal_fps, min_height=MIN_HEIGHT)
+record.plot('y',smooth=('y',),xlim=(1.76467363e+09,1.76467367e+09), ylim=(-0.05,0.15))
+```
+
+
+## Audit log
+| Data | Utente | Descrizione |
+|----------|----------|----------|
+| 16.03.2026 | Radosław Lech | First version |
