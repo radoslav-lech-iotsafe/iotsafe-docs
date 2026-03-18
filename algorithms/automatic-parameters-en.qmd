@@ -1,3 +1,8 @@
+---
+title: "Automatic calculation of the parameters"
+format: markdown
+---
+
 # Automatic calculation of the parameters
 
 ```{python}
